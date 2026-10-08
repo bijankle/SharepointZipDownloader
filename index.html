@@ -88,10 +88,18 @@ dialog h3 { margin: 0 0 10px; }
 .field label { font-weight: 600; font-size: 14px; }
 .field .note { margin: 0; }
 details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
-.ul { list-style: none; padding: 0; margin: 8px 0 0; max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.ul { list-style: none; padding: 0; margin: 8px 0 0; max-height: 380px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; scroll-behavior: smooth; }
+.ul li.now { background: var(--soft); }
+.note.why { color: var(--bad); white-space: normal; }
+.dirbox { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--bg); }
+.dirbox .grow { flex: 1; min-width: 200px; font-size: 14px; }
+.bar.indet > i { width: 30% !important; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+.tw { scroll-behavior: smooth; }
 .ul li { display: flex; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--line); font-size: 13.5px; align-items: center; }
 .ul li:last-child { border-bottom: 0; }
 .ul li .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ul li .n .note { white-space: normal; }
 .ul li a { color: var(--accent); white-space: nowrap; }
 .ul li .note { white-space: nowrap; }
 .hide { display: none !important; }
@@ -116,14 +124,27 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 
   <section class="card">
     <h2>1. Get the files</h2>
-    <p class="sub">Paste SharePoint links (or document numbers, if a register is loaded). The browser downloads them with your normal SharePoint sign in, then you drop the downloaded files here. You can also drop files straight from your OneDrive synced folder.</p>
+    <p class="sub">Paste SharePoint links (or document numbers, if a register is loaded). The browser downloads them with your normal SharePoint sign in, and this page watches the download folder: it checks each file as it arrives, shows anything that failed and why, and adds the good ones to the list. You can also drop files straight from your OneDrive synced folder.</p>
+    <div class="dirbox">
+      <div class="row">
+        <span class="grow" id="dirStatus">No download folder chosen yet.</span>
+        <button id="pickDir" type="button">Choose download folder</button>
+      </div>
+      <details>
+        <summary>How to set this up (once)</summary>
+        <p class="note">1. In File Explorer, make a new folder inside Downloads, for example <b>Downloads\SharePoint Prep</b>. (Browsers don't let a web page watch the Downloads folder itself, only a folder inside it.)<br>
+        2. In Edge open Settings, then Downloads, press Change next to Location and choose that folder. Make sure "Ask me what to do with each download" is off. (In Chrome: Settings, Downloads, Location.)<br>
+        3. On this page press Choose download folder, pick the same folder and press Allow. The page remembers it; next time it may just ask you to allow it again.<br>
+        4. The first time you press Download all, the browser may block the downloads as pop ups: click the blocked pop up icon at the right end of the address bar and choose Always allow for this site.</p>
+      </details>
+    </div>
     <div class="cols">
       <div>
         <textarea id="links" placeholder="One per line, for example:&#10;https://yourcompany.sharepoint.com/:b:/s/Project/AbC123...&#10;https://yourcompany.sharepoint.com/sites/Project/Shared Documents/.../2000-F00-LST-EL-20002_0.pdf&#10;2000-F00-LST-EL-20002" spellcheck="false"></textarea>
         <div class="row" style="margin-top:8px">
           <button id="checkLinks" type="button">Check links</button>
           <button id="testLink" type="button" disabled>Test the first one</button>
-          <button id="dlLinks" type="button" class="primary" disabled>Download all to my Downloads folder</button>
+          <button id="dlLinks" type="button" class="primary" disabled>Download all</button>
         </div>
         <ul class="ul hide" id="linkList"></ul>
         <div class="msg" id="linkMsg" role="status"></div>
@@ -143,6 +164,7 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
           <input id="fileInput" type="file" multiple accept=".pdf,.zip,application/pdf,application/zip" class="hide">
           <input id="dirInput" type="file" webkitdirectory multiple class="hide">
         </div>
+        <div class="row" style="margin-top:10px"><button id="filesZipBtn" type="button" disabled>Save all files in the list as one zip</button><span class="note">the files exactly as downloaded, plus download-report.csv</span></div>
         <div class="msg" id="dropMsg" role="status"></div>
       </div>
     </div>
@@ -180,9 +202,9 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 
   <section class="card">
     <h2>4. Get the results</h2>
-    <p class="sub">Batches are made first: reading copies combined into batch-1.pdf, batch-2.pdf and so on, each under the size limit, each starting with a contents page.</p>
+    <p class="sub">Batches are made first: reading copies combined into batch-1.pdf, batch-2.pdf and so on, each under the size limit, each starting with a contents page. The reading package zip holds the batches, manifest.json and the download report. The original files have their own zip in step 1.</p>
     <div class="row">
-      <button id="zipBtn" type="button" class="primary" disabled>Download everything as one zip</button>
+      <button id="zipBtn" type="button" class="primary" disabled>Save the reading package as one zip</button>
       <button id="ghBtn" type="button" class="primary" disabled>Upload to GitHub</button>
       <span class="note" id="outNote"></span>
     </div>

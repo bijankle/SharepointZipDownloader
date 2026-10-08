@@ -133,46 +133,280 @@ function linkInfo(line) {
 function checkLinks() {
   const seen = new Set();
   S.links = $("links").value.split(/\r?\n/).map(s => s.trim()).filter(s => s && !seen.has(s) && seen.add(s)).map(raw => ({ raw, state: "", ...linkInfo(raw) }));
-  refreshLinks();
+  refreshLinks(true);
 }
-function refreshLinks() {
+// ---------- the link list ----------
+// states: "" waiting, "downloading", "done" (file arrived and checked), "failed", "requested" (browsers that can't
+// watch a folder), "received" (a dropped file matched it)
+function linkChip(l) {
+  if (l.bad) return ["bad", "Problem", l.bad];
+  if (l.state === "done") return ["ok", l.fromFolder ? "Already there" : "Downloaded", mb(l.got.size) + (l.got.name !== l.file && l.got.name ? `, saved as ${l.got.name}` : "")];
+  if (l.state === "received") return ["ok", "Received", ""];
+  if (l.state === "downloading") return ["busy", l.retry ? "Retrying" : "Downloading", l.bytes ? mb(l.bytes) + " received" : "waiting for SharePoint..."];
+  if (l.state === "failed") return ["bad", l.tries > 1 ? "Failed twice" : "Failed", l.why];
+  if (l.state === "requested") return ["busy", "Requested", ""];
+  return ["", "Waiting", ""];
+}
+function linkHtml(l, i) {
+  const [c, t, note] = linkChip(l);
+  const name = l.file ? esc(l.file) + (l.reg && l.reg[2] ? ` <span class="note">${esc(l.reg[2])}</span>` : "") : esc(l.raw);
+  const acts = l.bad ? "" : `<a href="${esc(l.url)}" target="_blank" rel="noopener">Download</a> <a href="${esc(l.open)}" target="_blank" rel="noopener">Open</a>`;
+  return `<li data-i="${i}" class="${l.state === "downloading" ? "now" : ""}"><span class="chip ${c}">${esc(t)}</span><span class="n" title="${esc(l.raw)}">${name}${note ? `<br><span class="note ${c === "bad" ? "why" : ""}">${esc(note)}</span>` : ""}</span>${acts}</li>`;
+}
+function paintLink(l) {
+  const i = S.links.indexOf(l), li = $("linkList").querySelector(`li[data-i="${i}"]`);
+  if (li) li.outerHTML = linkHtml(l, i);
+}
+function follow(container, el) {   // keeps the current line in view inside its own scrolling box (not the whole page)
+  if (!container || !el) return;
+  const c = container.getBoundingClientRect(), r = el.getBoundingClientRect();
+  if (r.top < c.top + 30 || r.bottom > c.bottom - 30) container.scrollTop += r.top - c.top - (c.height - r.height) / 2;
+}
+function refreshLinks(say) {
   const ul = $("linkList"), have = new Set(S.docs.map(d => fileKey(d.name)));
-  for (const l of S.links) if (l.file && have.has(fileKey(l.file))) l.state = "received";
+  for (const l of S.links) if (!l.state && l.file && have.has(fileKey(l.file))) l.state = "received";
   ul.classList.toggle("hide", !S.links.length);
-  ul.innerHTML = S.links.map((l, i) => {
-    const chip = l.bad ? `<span class="chip bad">Problem</span>` : l.state === "received" ? `<span class="chip ok">Received</span>` : l.state === "requested" ? `<span class="chip busy">Requested</span>` : `<span class="chip">Waiting</span>`;
-    const name = l.file ? esc(l.file) + (l.reg && l.reg[2] ? ` <span class="note">${esc(l.reg[2])}</span>` : "") : esc(l.raw);
-    const acts = l.bad ? `<span class="note">${esc(l.bad)}</span>` : `<a href="${esc(l.url)}" target="_blank" rel="noopener">Download</a> <a href="${esc(l.open)}" target="_blank" rel="noopener">Open</a>`;
-    return `<li data-i="${i}">${chip}<span class="n" title="${esc(l.raw)}">${name}</span>${acts}</li>`;
-  }).join("");
-  const good = S.links.filter(l => !l.bad), got = S.links.filter(l => l.state === "received").length;
+  ul.innerHTML = S.links.map(linkHtml).join("");
+  const good = S.links.filter(l => !l.bad), done = S.links.filter(l => l.state === "done" || l.state === "received").length, failed = S.links.filter(l => l.state === "failed").length;
   $("testLink").disabled = !good.length; $("dlLinks").disabled = !good.length || S.busy;
-  if (S.links.length) msg("linkMsg", `${S.links.length} line${S.links.length === 1 ? "" : "s"}: ${good.length} ready to download` + (S.links.length - good.length ? `, ${S.links.length - good.length} with a problem (see the list)` : "") + (got ? `. ${got} already received.` : "."), S.links.length - good.length ? "warn" : "info");
+  $("dlLinks").textContent = failed && done + failed === good.length ? `Retry the ${failed} failed` : done ? `Download the ${good.length - done} not yet downloaded` : "Download all";
+  if (S.busy || !say) return;
+  if (S.links.length) msg("linkMsg", `${S.links.length} line${S.links.length === 1 ? "" : "s"}: ${good.length} can be downloaded` + (S.links.length - good.length ? `, ${S.links.length - good.length} with a problem (see the list)` : "")
+    + (done ? `. ${done} downloaded` : "") + (failed ? `, ${failed} failed` : "") + ".", failed || S.links.length - good.length ? "warn" : done && done === good.length ? "ok" : "info");
   else msg("linkMsg", "");
 }
-async function downloadLinks() {
-  let todo = S.links.filter(l => !l.bad && !l.state);   // new ones first; once all were asked for, ask again for any not received
-  if (!todo.length) todo = S.links.filter(l => !l.bad && l.state !== "received");
-  if (!todo.length) return msg("linkMsg", "Everything in the list has already been received.", "ok");
+
+// ---------- the download folder ----------
+// A web page can't see the browser's downloads, so it watches the folder the browser saves into (a folder inside
+// Downloads: browsers refuse Downloads itself). It sees each file arrive, checks it, and reads it from there.
+const canWatch = typeof window.showDirectoryPicker === "function";
+function folderStatus() {
+  const el = $("dirStatus");
+  if (!canWatch) { el.innerHTML = "This browser can't watch a folder, so downloads can't be checked. Use Microsoft Edge or Google Chrome on a computer for checked downloads."; $("pickDir").classList.add("hide"); return; }
+  el.innerHTML = S.dir ? `Watching <b>${esc(S.dir.name)}</b>. Downloads must be saved there (see How to set this up).` : "No download folder chosen yet.";
+  $("pickDir").textContent = S.dir ? "Change folder" : "Choose download folder";
+}
+async function pickDir() {
+  try {
+    const h = await window.showDirectoryPicker({ id: "pdfprep-downloads", mode: "read", startIn: "downloads" });
+    S.dir = h; await idb.put("dlDir", h); folderStatus();
+    msg("linkMsg", `Watching ${h.name}. Make sure Edge (or Chrome) saves downloads to this folder.`, "ok");
+  } catch (e) {
+    if (e.name === "AbortError") msg("linkMsg", "No folder was chosen. Choose the folder INSIDE Downloads that your browser saves to (browsers don't allow the Downloads folder itself).", "warn");
+    else msg("linkMsg", "That folder can't be used: " + e.message, "bad");
+  }
+}
+async function dirAllowed() {
+  try {
+    if ((await S.dir.queryPermission({ mode: "read" })) === "granted") return true;
+    return (await S.dir.requestPermission({ mode: "read" })) === "granted";
+  } catch (_) { return false; }
+}
+const TEMP = /\.(crdownload|part|partial|tmp|download|opdownload)$|^Unconfirmed \d+|^\.|^~\$/i;
+class Watch {
+  constructor(dir) { this.dir = dir; this.base = new Map(); this.seen = new Map(); this.claimed = new Set(); }
+  async list() { const out = new Map(); for await (const [name, h] of this.dir.entries()) if (h.kind === "file") out.set(name, h); return out; }
+  async start() { this.base = await this.list(); }
+  async existing(name) {   // a file with this name already in the folder from an earlier run
+    for (const [n, h] of this.base) if (!this.claimed.has(n) && !TEMP.test(n) && fileKey(n) === fileKey(name)) { try { return { name: n, file: await h.getFile() }; } catch (_) {} }
+    return null;
+  }
+  async poll() {   // finished files (not seen before, size steady) and files still being written
+    const done = [], partial = [];
+    for (const [name, h] of await this.list()) {
+      if (this.claimed.has(name) || this.base.has(name)) continue;
+      let f; try { f = await h.getFile(); } catch (_) { continue; }   // (being renamed right now)
+      if (TEMP.test(name)) { partial.push({ name, size: f.size }); continue; }
+      const prev = this.seen.get(name); this.seen.set(name, f.size);
+      if (prev === f.size && f.size > 0) done.push({ name, file: f });
+    }
+    return { done, partial };
+  }
+}
+async function checkFile(f, expectZip) {   // is this really the PDF (or zip), or a saved sign in / error page?
+  const head = await f.slice(0, 1024).text().catch(() => "");
+  if (head.includes("%PDF-") || (expectZip && head.startsWith("PK"))) return "";
+  if (/<html|<!doctype|<head|<body/i.test(head)) return "SharePoint sent a web page instead of the file (usually a sign in or \"access denied\" page).";
+  if (!f.size) return "The file arrived empty.";
+  return "The file that arrived is not a PDF.";
+}
+function failWith(l, why) {   // on the second try keep the first reason too when it was different
+  const first = l.state === "failed" || l.tries > 1 ? (l.firstWhy || "") : "";
+  if (l.tries <= 1) l.firstWhy = why;
+  l.state = "failed"; l.painted = false;
+  l.why = first && first !== why ? `${why} (First try: ${first})` : why;
+}
+const TO = { nopage: 20000, nothing: 60000, stall: 120000, ...(window.__prepTimeouts || {}) }, PARALLEL = 3;   // (tests shorten the waits)
+async function downloadAll() {
+  if (!S.links.length) checkLinks();
+  let todo = S.links.filter(l => !l.bad && l.state !== "done" && l.state !== "received");
+  if (!todo.length) return msg("linkMsg", "Everything in the list has been downloaded.", "ok");
+  for (const l of todo) { l.final = false; l.painted = false; l.fromFolder = false; }
+  if (!canWatch) return legacyDownload(todo);
+  if (!S.dir) return msg("linkMsg", "First press \"Choose download folder\" and pick the folder your browser saves downloads to.", "warn");
+  if (!(await dirAllowed())) return msg("linkMsg", "The page needs permission to look in the download folder. Press the button again and choose Allow.", "warn");
+  const w = new Watch(S.dir), known = new Set(S.links.filter(l => l.file).map(l => fileKey(l.file)));
+  try { await w.start(); } catch (e) { return msg("linkMsg", "Could not look in the download folder (it may have been moved or deleted). Choose it again.", "bad"); }
+  const total = todo.length, count = () => { const d = todo.filter(l => l.state === "done").length, f = todo.filter(l => l.state === "failed" && l.final).length; return [d, f]; };
+  startJob("Downloading", total);
+  const tabs = [];
+  let out = ["", "info"], paused = false;
+  let pass = 1, round = todo, gotAny = todo.some(l => l.state === "done");
+  const show = cur => {   // first go: every link counts once; the second try for failed ones has its own count
+    const d = todo.filter(l => l.state === "done").length;
+    if (pass === 1) {
+      const f = todo.filter(l => l.state === "failed").length, fin = d + f;
+      $("jobBar").style.width = (100 * fin) / total + "%";
+      $("jobLabel").textContent = `Downloading: ${fin} of ${total} finished (${d} downloaded${f ? `, ${f} failed so far, tried again at the end` : ""})`;
+    } else {
+      const fin = round.filter(l => l.state === "done" || l.final).length, ok = round.filter(l => l.state === "done").length;
+      $("jobBar").style.width = (100 * fin) / round.length + "%";
+      $("jobLabel").textContent = `Second try for the ${round.length} that failed: ${fin} of ${round.length} finished (${ok} now downloaded). ${d} of ${total} downloaded in all.`;
+    }
+    if (cur) { sub(`Now: ${cur.file || cur.raw}` + (cur.bytes ? `, ${mb(cur.bytes)} received` : ", waiting for SharePoint"), 1); $("subBar").parentElement.classList.add("indet"); }
+  };
+  try {
+    for (const l of todo) {   // already in the folder from an earlier go: no need to download again
+      if (!l.file) continue;
+      const ex = await w.existing(l.file);
+      if (ex && !(await checkFile(ex.file, /\.zip$/i.test(l.file)))) { w.claimed.add(ex.name); l.state = "done"; l.fromFolder = true; l.got = { name: ex.name, file: ex.file, size: ex.file.size }; l.final = true; }
+    }
+    refreshLinks(); show();
+    for (pass = 1; pass <= 2 && !paused; pass++) {
+      const list = pass === 1 ? todo.filter(l => l.state !== "done") : todo.filter(l => l.state === "failed" && !l.final);
+      round = list;
+      if (!list.length) break;
+      if (pass === 2) { await sleep(1500); }
+      for (const l of list) { l.retry = pass === 2; if (pass === 1) l.tries = 0; }
+      const busy = new Set(); let next = 0, inARow = 0, pages = 0;
+      while (next < list.length || busy.size) {
+        if (S.cancel) throw new Cancelled();
+        while (next < list.length && !paused) {   // start the next ones (up to 3 at once; a link without a known file name alone)
+          const l = list[next], loneBusy = [...busy].some(t => !t.l.file);
+          if (busy.size && (!l.file || loneBusy || busy.size >= PARALLEL)) break;
+          const win = window.open(l.url, "_blank");
+          if (!win) {
+            paused = true;
+            out = ["The browser blocked the downloads as pop ups. Click the blocked pop up icon at the right end of the address bar, choose \"Always allow pop ups from this site\", then press the button again. It carries on where it stopped.", "bad"];
+            break;
+          }
+          tabs.push(win);
+          const t = { l, win, start: Date.now(), grew: Date.now(), bytes: 0, active: false };
+          busy.add(t); next++; l.tries = (l.tries || 0) + 1;
+          l.state = "downloading"; l.bytes = 0; l.why = ""; paintLink(l);
+          follow($("linkList"), $("linkList").querySelector(`li[data-i="${S.links.indexOf(l)}"]`)); show(l);
+          await sleep(500);
+        }
+        if (!busy.size) break;
+        await sleep(700);
+        let r;
+        try { r = await w.poll(); } catch (_) { throw new Error("The download folder could not be read any more (was it moved or renamed?). Choose it again and press the button to carry on."); }
+        for (const p of r.partial) {   // a file still being written: show how much has arrived
+          const base = fileKey(p.name.replace(/\.(crdownload|part|partial|tmp|download|opdownload)$/i, ""));
+          const t = [...busy].find(t => t.l.file && fileKey(t.l.file) === base) || (busy.size === 1 && !known.has(base) ? [...busy][0] : null);
+          if (t) { t.active = true; if (p.size !== t.bytes) { t.bytes = p.size; t.grew = Date.now(); t.l.bytes = p.size; paintLink(t.l); } }
+        }
+        for (const d of r.done) {
+          let t = [...busy].find(t => t.l.file && fileKey(t.l.file) === fileKey(d.name));
+          if (!t) {   // a file that arrived after its link was marked failed still counts for that link
+            const late = todo.find(l => l.state === "failed" && l.file && fileKey(l.file) === fileKey(d.name));
+            if (late) t = { l: late, win: { close() {} } };
+          }
+          if (!t && !known.has(fileKey(d.name))) t = [...busy].find(t => !t.l.file);   // a link without a file name takes only a file no other link expects
+          if (!t) continue;   // something else downloaded meanwhile: not ours
+          w.claimed.add(d.name); busy.delete(t);
+          const bad = await checkFile(d.file, /\.zip$/i.test(t.l.file || d.name));
+          if (bad) { failWith(t.l, bad); }
+          else { t.l.state = "done"; t.l.final = true; t.l.why = ""; t.l.painted = false; t.l.got = { name: d.name, file: d.file, size: d.file.size }; inARow = 0; pages = 0; gotAny = true; try { t.win.close(); } catch (_) {} }
+        }
+        for (const t of [...busy]) {   // nothing happening: say why
+          const age = Date.now() - t.start;
+          let why = "";
+          if (!t.active && !t.win.closed && age > TO.nopage) why = "A web page opened instead of a download. SharePoint probably wants you to sign in, or you have no access to this file. Look at the tab that opened.";
+          else if (!t.active && age > TO.nothing) why = "Nothing arrived in the download folder. Check that the browser saves downloads to the folder chosen here, and that it doesn't ask where to save each file.";
+          else if (t.active && Date.now() - t.grew > TO.stall) why = "The download stopped part way (connection lost?).";
+          if (why) { busy.delete(t); failWith(t.l, why); if (!t.active) { inARow++; if (!t.win.closed) pages++; } }
+        }
+        for (const l of todo) if (l.state === "failed" && !l.painted) { if (pass === 2 && list.includes(l)) l.final = true; l.painted = true; paintLink(l); }
+        for (const l of todo) if (l.state === "done" && !l.painted) { l.painted = true; paintLink(l); }
+        if (pass === 1 && inARow >= 3 && (pages >= 3 || !gotAny) && !paused) {
+          paused = true;
+          out = ["Stopped: several downloads in a row failed without a file arriving. SharePoint most likely needs you to sign in: look at the tab that opened, sign in there, then press the button again. It carries on where it stopped.", "bad"];
+        }
+        show(busy.size ? [...busy][0].l : null);
+      }
+      for (const l of list) l.painted = false;
+    }
+    if (!paused) for (const l of todo) if (l.state === "failed") l.final = true;
+    const [d, f] = count();
+    if (!out[0]) out = f ? [`${d} downloaded, ${f} failed even after a second try (the red lines say why). Press "Retry the ${f} failed" to try them again.`, "warn"] : [`All ${d} downloaded and checked.`, "ok"];
+  } catch (e) {
+    if (e.cancelled) out = ["Stopped. Files already downloaded are kept; press the button again to carry on.", "warn"];
+    else out = [e.message, "bad"];
+    for (const l of todo) if (l.state === "downloading") { l.state = ""; l.bytes = 0; }
+  } finally {
+    $("subBar").parentElement.classList.remove("indet");
+    for (const t of tabs) try { if (!t.closed && tabs.indexOf(t) < tabs.length - 1) t.close(); } catch (_) {}
+    endJob();
+    const got = todo.filter(l => l.state === "done" && l.got && !l.added);
+    if (got.length) { got.forEach(l => (l.added = true)); await addFiles(got.map(l => ({ file: l.got.file, path: (S.dir ? S.dir.name + "/" : "") + l.got.name }))); }
+    refreshLinks();
+    msg("linkMsg", ...out);
+    $("filesZipBtn").disabled = !S.docs.length;
+    if (got.length && todo.every(l => l.state === "done" || l.final) && out[1] !== "bad") await filesZip();   // the single zip of everything downloaded
+  }
+}
+async function legacyDownload(todo) {   // browsers that can't watch a folder: ask, and match the files you drop
   startJob(`Asking the browser to download ${todo.length} file${todo.length === 1 ? "" : "s"}`, todo.length);
   let n = 0, out = ["", "info"];
   try {
     for (const l of todo) {
       if (S.cancel) throw new Cancelled();
-      const w = window.open(l.url, "_blank");
-      if (!w) {
-        out = ["The browser blocked the downloads as pop ups. Click the blocked pop up icon at the right end of the address bar, choose \"Always allow pop ups from this site\", then press \"Download all\" again. Files already asked for are marked Requested and are not asked for twice.", "bad"];
-        return;
-      }
-      try { w.opener = null; } catch (_) {}
-      l.state = "requested"; n++; refreshLinks(); stepJob(n, l.file || l.raw);
-      await sleep(1500);   // a pause between files so SharePoint and the browser keep up
+      const win = window.open(l.url, "_blank");
+      if (!win) { out = ["The browser blocked the downloads as pop ups. Allow pop ups for this site (icon at the right end of the address bar), then press the button again.", "bad"]; return; }
+      l.state = "requested"; n++; paintLink(l); follow($("linkList"), $("linkList").querySelector(`li[data-i="${S.links.indexOf(l)}"]`)); stepJob(n, l.file || l.raw);
+      await sleep(1500);
     }
-    out = [`${n} download${n === 1 ? "" : "s"} requested. When they have finished, open your Downloads folder, select the files and drag them onto the drop box (or use Choose files). Links turn green as their files arrive. If a tab shows a SharePoint sign in page instead, sign in there and press the button again.`, "ok"];
-  } catch (e) {
-    if (!e.cancelled) throw e;
-    out = [`Stopped after ${n} file${n === 1 ? "" : "s"}.`, "warn"];
-  } finally { endJob(); if (out[0]) msg("linkMsg", ...out); }
+    out = [`${n} download${n === 1 ? "" : "s"} requested. This browser can't check them: drop the downloaded files on the drop box, and links turn green as their files arrive. Any that stay "Requested" did not download.`, "warn"];
+  } catch (e) { if (!e.cancelled) throw e; out = [`Stopped after ${n} file${n === 1 ? "" : "s"}.`, "warn"]; }
+  finally { endJob(); msg("linkMsg", ...out); }
+}
+
+// ---------- report and the zip of downloaded files ----------
+function reportCsv() {
+  const q = v => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+  const rows = [["Line", "Link or number", "File", "Status", "Size (MB)", "Reason"]];
+  S.links.forEach((l, i) => {
+    const st = l.bad ? "Problem" : l.state === "done" ? (l.fromFolder ? "Downloaded (already in folder)" : "Downloaded") : l.state === "received" ? "Received (dropped in)" : l.state === "failed" ? "Failed" : l.state === "requested" ? "Requested, not checked" : "Not downloaded";
+    rows.push([i + 1, l.raw, (l.got && l.got.name) || l.file || "", st, l.got ? (l.got.size / 1e6).toFixed(2) : "", l.bad || l.why || ""]);
+  });
+  return "﻿" + rows.map(r => r.map(q).join(",")).join("\r\n");
+}
+async function crcAll(docs, label) {   // the zip needs a checksum of every file; worked out in the background worker
+  const need = docs.filter(d => d.crc == null);
+  if (!need.length) return;
+  startJob(label, need.length);
+  try {
+    for (let i = 0; i < need.length; i++) {
+      if (S.cancel) throw new Cancelled();
+      stepJob(i, need[i].name); sub(need[i].name, i / need.length);
+      need[i].crc = (await W.run({ type: "crc", blob: need[i].file })).crc;
+      if (i % 5 === 0) follow($("tbody").closest(".tw"), $("tbody").querySelector(`tr[data-id="${need[i].id}"]`));
+    }
+  } finally { endJob(); }
+}
+async function filesZip() {
+  const docs = S.docs.filter(d => d.include);
+  if (!docs.length) return msg("dropMsg", "There are no files in the list to zip.", "warn");
+  try {
+    await crcAll(docs, "Preparing the zip of downloaded files");
+    const names = zipNames(docs), z = new StoreZip();
+    for (const d of docs) z.add(names.get(d.id), d.file, d.crc);
+    if (S.links.length) { const r = new TextEncoder().encode(reportCsv()); z.add("download-report.csv", new Blob([r]), crc32(r)); }
+    const zip = z.finish();
+    saveBlob(zip, `downloaded-files-${today()}.zip`);
+    msg("dropMsg", `Zip of the downloaded files saved (${mb(zip.size)}, ${docs.length} file${docs.length === 1 ? "" : "s"}` + (S.links.length ? " and download-report.csv" : "") + "). It goes to your browser's download folder.", "ok");
+  } catch (e) { msg("dropMsg", e.cancelled ? "Cancelled." : e.message, e.cancelled ? "warn" : "bad"); }
 }
 
 // ---------- adding files ----------
@@ -290,6 +524,7 @@ function summary() {
   $("prepNote").textContent = !inc.length ? "" : fresh ? `${fresh} waiting` + (failed ? `, ${failed} with a problem` : "") : failed ? `${failed} with a problem (untick them to leave them out)` : "All reading copies are made.";
   $("stats").innerHTML = ready.length ? `<span>Originals: <b>${mb(origReady)}</b></span><span>Reading copies: <b>${mb(read)}</b></span><span>Saved: <b>${mb(origReady - read)}</b> (${Math.round(100 - (100 * read) / Math.max(1, origReady))}%)</span><span>Pages: <b>${ready.reduce((a, d) => a + d.pages, 0).toLocaleString()}</b></span>` : "";
   const can = !S.busy && ready.length > 0;
+  $("filesZipBtn").disabled = S.busy || !inc.length;
   $("zipBtn").disabled = !can; $("ghBtn").disabled = !can;
   $("outNote").textContent = ready.length && waiting.length ? `Only the ${ready.length} finished document${ready.length === 1 ? "" : "s"} will be included.` : "";
   $("allBox").checked = S.docs.length > 0 && S.docs.every(d => d.include);
@@ -349,6 +584,7 @@ async function prepAll() {
       if (S.cancel) throw new Cancelled();
       const d = todo[i];
       d.state = "working"; d.msg = "Opening..."; updateRow(d); stepJob(i, d.name); sub(d.name, 0);
+      follow($("tbody").closest(".tw"), $("tbody").querySelector(`tr[data-id="${d.id}"]`));
       try {
         const r = await W.run({ type: "prep", file: d.file, dpi: +set.dpi, quality: +set.quality, keepText: !!set.keepText }, p => {
           d.msg = `Page ${p.page} of ${p.pages}`; updateRow(d); sub(`${d.name}: page ${p.page} of ${p.pages}`, (p.page - 1) / p.pages);
@@ -421,7 +657,7 @@ function manifest(batches, extra) {
     generated: new Date().toISOString(), tool: "PDF Prep for Project Library", ...extra,
     settings: { readingCopyDpi: +set.dpi, jpegQuality: +set.quality, batchLimitMB: +set.limitMB, textLayer: !!set.keepText },
     documents: readyDocs().map(d => ({ number: d.number, rev: d.rev, title: d.title || "", originalFile: d.name, ...(d.path && d.path !== d.name ? { source: d.path } : {}),
-      pages: d.pages, size: d.size, readingCopySize: d.readSize, zipPath: "originals/" + names.get(d.id), libraryFile: `${d.number}_Rev${d.rev}.pdf`, batches: where.get(d.id) || [] })),
+      pages: d.pages, size: d.size, readingCopySize: d.readSize, fileInFilesZip: names.get(d.id), libraryFile: `${d.number}_Rev${d.rev}.pdf`, batches: where.get(d.id) || [] })),
     batches: batches.map(b => ({ file: b.name, size: b.size, pages: b.pages, documents: b.entries.map(e => ({ number: e.d.number, rev: e.d.rev, pages: rg(e.start, e.end), ...(e.part ? { part: e.part } : {}) })) })),
   };
 }
@@ -464,16 +700,16 @@ function saveBlob(blob, name) {
 async function downloadZip() {
   msg("outMsg", "");
   try {
-    const batches = await ensureBatches(), docs = readyDocs(), names = zipNames(docs);
+    const batches = await ensureBatches(), docs = readyDocs();
     const z = new StoreZip();
-    for (const d of docs) z.add("originals/" + names.get(d.id), d.file, d.crc);
     for (const b of batches) z.add("batches/" + b.name, b.blob, b.crc);
     const m = new TextEncoder().encode(JSON.stringify(manifest(batches, {}), null, 2));
     z.add("manifest.json", new Blob([m]), crc32(m));
+    if (S.links.length) { const r = new TextEncoder().encode(reportCsv()); z.add("download-report.csv", new Blob([r]), crc32(r)); }
     const zip = z.finish();
-    saveBlob(zip, `pdf-prep-${today()}.zip`);
+    saveBlob(zip, `reading-package-${today()}.zip`);
     const over = batches.filter(b => b.over).length;
-    msg("outMsg", `Zip ready (${mb(zip.size)}): ${docs.length} original${docs.length === 1 ? "" : "s"}, ${batches.length} batch${batches.length === 1 ? "" : "es"} and manifest.json. It is in your Downloads folder.` + (over ? ` ${over} batch${over === 1 ? " is" : "es are"} over the limit because a single page is bigger than it: raise the limit or lower the quality.` : ""), over ? "warn" : "ok");
+    msg("outMsg", `Reading package saved (${mb(zip.size)}): ${batches.length} batch${batches.length === 1 ? "" : "es"} covering ${docs.length} document${docs.length === 1 ? "" : "s"}, manifest.json` + (S.links.length ? " and download-report.csv" : "") + ". It goes to your browser's download folder." + (over ? ` ${over} batch${over === 1 ? " is" : "es are"} over the limit because a single page is bigger than it: raise the limit or lower the quality.` : ""), over ? "warn" : "ok");
   } catch (e) {
     if (e.cancelled) msg("outMsg", "Cancelled.", "warn"); else msg("outMsg", e.message, "bad");
   }
@@ -548,7 +784,7 @@ async function upload() {
   ul.innerHTML = files.filter(f => f.blob).map((f, i) => `<li data-p="${esc(f.path)}"><span class="chip">Waiting</span><span class="n">${esc(f.path)}</span><span class="note">${mb(f.blob.size)}</span></li>`).join("")
     + skipped.map(s => `<li><span class="chip warn">Skipped</span><span class="n">${esc(s)}</span></li>`).join("");
   const li = p => ul.querySelector(`li[data-p="${CSS.escape(p)}"]`);
-  const mark = (p, c, t) => { const el = li(p); if (el) el.querySelector(".chip").outerHTML = `<span class="chip ${c}">${esc(t)}</span>`; };
+  const mark = (p, c, t) => { const el = li(p); if (el) { el.querySelector(".chip").outerHTML = `<span class="chip ${c}">${esc(t)}</span>`; if (c === "busy") follow(ul, el); } };
   startJob("Uploading to GitHub", 1);
   let folder = "";
   try {
@@ -646,9 +882,11 @@ $("regInput").onchange = e => { const f = e.target.files[0]; e.target.value = ""
 $("regForget").onclick = async () => { S.reg = null; await idb.del("register"); $("regStatus").textContent = "Register removed from this browser."; regStatus(); refreshLinks(); };
 $("links").value = LS.get("pdfprep.links") || "";
 $("links").addEventListener("input", () => LS.set("pdfprep.links", $("links").value));
-$("checkLinks").onclick = checkLinks;
+$("checkLinks").onclick = () => { if (S.busy) return; checkLinks(); };
 $("testLink").onclick = () => { const l = S.links.find(x => !x.bad); if (l) { window.open(l.open, "_blank", "noopener"); msg("linkMsg", "The first file opened in a new tab. If it shows the document, your sign in works and Download all will work. If it asks you to sign in, sign in there, then come back.", "info"); } };
-$("dlLinks").onclick = () => { if (!S.links.length) checkLinks(); downloadLinks(); };
+$("dlLinks").onclick = () => downloadAll();
+$("pickDir").onclick = pickDir;
+$("filesZipBtn").onclick = filesZip;
 const drop = $("drop");
 ["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); }));
@@ -660,7 +898,7 @@ $("dirInput").onchange = e => { const l = [...e.target.files].map(f => ({ file: 
 $("tbody").addEventListener("input", onEdit);
 $("tbody").addEventListener("change", onEdit);
 $("allBox").onchange = e => { for (const d of S.docs) { d.include = e.target.checked; d.dupOf = ""; } if (e.target.checked) markDuplicates(); renderTable(); };
-$("clearAll").onclick = () => { if (S.busy || !S.docs.length) return; if (!confirm(`Remove all ${S.docs.length} files from the list? (Nothing is deleted from your computer.)`)) return; S.docs = []; S.batches = null; renderTable(); refreshLinks(); msg("dropMsg", ""); msg("prepMsg", ""); msg("outMsg", ""); $("upList").classList.add("hide"); };
+$("clearAll").onclick = () => { if (S.busy || !S.docs.length) return; if (!confirm(`Remove all ${S.docs.length} files from the list? (Nothing is deleted from your computer.)`)) return; S.docs = []; S.batches = null; for (const l of S.links) { if (l.state === "received") l.state = ""; l.added = false; } renderTable(); refreshLinks(); msg("dropMsg", ""); msg("prepMsg", ""); msg("outMsg", ""); $("upList").classList.add("hide"); };
 $("prepBtn").onclick = prepAll;
 $("zipBtn").onclick = downloadZip;
 $("ghBtn").onclick = upload;
@@ -669,9 +907,11 @@ window.addEventListener("beforeunload", e => { if (S.busy || S.docs.some(d => d.
 (async () => {
   const r = await idb.get("register");
   if (r && r.rows) { indexRegister(r); regStatus(); }
+  if (canWatch) { const h = await idb.get("dlDir"); if (h && h.kind === "directory") S.dir = h; }
+  folderStatus();
   if ($("links").value.trim()) checkLinks();
   summary();
 })();
 
 // for the automated tests only
-window.__prep = { S, parseName, linkInfo, rkCmp, StoreZip, crc32, set: () => set };
+window.__prep = { S, parseName, linkInfo, rkCmp, StoreZip, crc32, set: () => set, reportCsv };
