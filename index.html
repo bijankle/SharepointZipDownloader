@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Prep for Project Library</title>
+<meta name="description" content="Prepares engineering PDFs for the Project Library app: originals for the app, light reading copies in batches for Claude.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='3' width='20' height='26' rx='3' fill='%231d4ed8'/%3E%3Cpath d='M11 11h10M11 16h10M11 21h6' stroke='white' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --ink: #1c1f24; --muted: #5d6470; --line: #dde1e6; --soft: #eef1f5;
+  --accent: #1d4ed8; --accent-ink: #ffffff; --ok: #157347; --ok-bg: #e6f4ec; --warn: #8a5a00; --warn-bg: #fff4dc;
+  --bad: #b42318; --bad-bg: #fdecea; --bar: #1d4ed8; --focus: #93b4ff;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121418; --card: #1b1e24; --ink: #e8eaee; --muted: #9aa3af; --line: #2e333b; --soft: #23272e;
+    --accent: #6d95ff; --accent-ink: #0b1020; --ok: #5bd28f; --ok-bg: #16301f; --warn: #f2c25b; --warn-bg: #33290f;
+    --bad: #ff8a80; --bad-bg: #3a1714; --bar: #6d95ff; --focus: #3b5bb5; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121418; --card: #1b1e24; --ink: #e8eaee; --muted: #9aa3af; --line: #2e333b; --soft: #23272e;
+  --accent: #6d95ff; --accent-ink: #0b1020; --ok: #5bd28f; --ok-bg: #16301f; --warn: #f2c25b; --warn-bg: #33290f;
+  --bad: #ff8a80; --bad-bg: #3a1714; --bar: #6d95ff; --focus: #3b5bb5; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; max-width: 1280px; margin: 0 auto; }
+header h1 { font-size: 19px; margin: 0; flex: 1; }
+header small { color: var(--muted); font-weight: 400; }
+main { max-width: 1280px; margin: 0 auto; padding: 0 16px 120px; display: grid; gap: 14px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+.card h2 { font-size: 16px; margin: 0 0 4px; }
+.card > p.sub { margin: 0 0 12px; color: var(--muted); font-size: 13.5px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.cols > div { min-width: 0; }
+@media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+button, .btn { font: inherit; border: 1px solid var(--line); background: var(--soft); color: var(--ink); border-radius: 7px; padding: 7px 13px; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row .sp { flex: 1; }
+textarea { width: 100%; min-height: 130px; font: 13px/1.4 ui-monospace, Consolas, monospace; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 7px; padding: 8px; resize: vertical; }
+input[type=text], input[type=password], input[type=number] { font: inherit; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; }
+.drop { border: 2px dashed var(--line); border-radius: 10px; padding: 26px 14px; text-align: center; color: var(--muted); transition: background .15s, border-color .15s; }
+.drop.over { border-color: var(--accent); background: var(--soft); color: var(--ink); }
+.drop strong { display: block; color: var(--ink); font-size: 16px; margin-bottom: 4px; }
+.msg { margin-top: 10px; padding: 9px 12px; border-radius: 7px; font-size: 14px; display: none; white-space: pre-line; }
+.msg.show { display: block; }
+.msg.info { background: var(--soft); }
+.msg.ok { background: var(--ok-bg); color: var(--ok); }
+.msg.warn { background: var(--warn-bg); color: var(--warn); }
+.msg.bad { background: var(--bad-bg); color: var(--bad); }
+.note { font-size: 13px; color: var(--muted); }
+.tw { overflow: auto; max-height: 62vh; border: 1px solid var(--line); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--soft); font-weight: 600; z-index: 1; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.fn { max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+td input[type=text] { width: 100%; min-width: 60px; padding: 3px 5px; }
+td.c-num input { min-width: 165px; } td.c-rev input { width: 52px; min-width: 0; } td.c-title input { min-width: 180px; }
+td.st { white-space: normal; min-width: 190px; }
+td.st .chip { white-space: normal; border-radius: 10px; }
+tr.off td { opacity: .5; }
+.chip { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--soft); color: var(--muted); }
+.chip.ok { background: var(--ok-bg); color: var(--ok); } .chip.warn { background: var(--warn-bg); color: var(--warn); }
+.chip.bad { background: var(--bad-bg); color: var(--bad); } .chip.busy { background: var(--soft); color: var(--accent); }
+.bars { display: grid; gap: 6px; margin: 10px 0; }
+.bar { height: 10px; background: var(--soft); border-radius: 99px; overflow: hidden; border: 1px solid var(--line); }
+.bar > i { display: block; height: 100%; width: 0; background: var(--bar); transition: width .2s; }
+.barlabel { font-size: 13px; color: var(--muted); }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 14px; margin-top: 6px; }
+.stats b { font-variant-numeric: tabular-nums; }
+#jobbar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line); padding: 10px 16px; display: none; z-index: 5; box-shadow: 0 -4px 14px rgb(0 0 0 / .08); }
+#jobbar.show { display: block; }
+#jobbar .in { max-width: 1280px; margin: 0 auto; display: flex; gap: 14px; align-items: center; }
+#jobbar .grow { flex: 1; min-width: 0; }
+#jobbar .barlabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--ink); max-width: 560px; width: calc(100% - 32px); padding: 18px; }
+dialog::backdrop { background: rgb(0 0 0 / .4); }
+dialog h3 { margin: 0 0 10px; }
+.field { display: grid; gap: 4px; margin: 12px 0; }
+.field label { font-weight: 600; font-size: 14px; }
+.field .note { margin: 0; }
+details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+.ul { list-style: none; padding: 0; margin: 8px 0 0; max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.ul li { display: flex; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--line); font-size: 13.5px; align-items: center; }
+.ul li:last-child { border-bottom: 0; }
+.ul li .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ul li a { color: var(--accent); white-space: nowrap; }
+.ul li .note { white-space: nowrap; }
+.hide { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PDF Prep for Project Library <small>originals for the app, light reading copies for Claude</small></h1>
+  <button id="openSettings" type="button">Settings</button>
+</header>
+<main>
+  <section class="card" id="regCard">
+    <div class="row">
+      <h2 style="margin:0">Document register <span class="note" style="font-weight:400">(optional, recommended)</span></h2>
+      <span class="sp"></span>
+      <label class="btn" for="regInput">Load register (.xlsx or .xlsm)</label>
+      <input id="regInput" type="file" accept=".xlsx,.xlsm" class="hide">
+      <button id="regForget" type="button" class="hide">Remove</button>
+    </div>
+    <p class="note" id="regStatus" style="margin:6px 0 0">No register loaded. With one, titles fill in by themselves, files are matched by exact name, and you can type a document number instead of a link. The register stays in this browser on this computer only.</p>
+  </section>
+
+  <section class="card">
+    <h2>1. Get the files</h2>
+    <p class="sub">Paste SharePoint links (or document numbers, if a register is loaded). The browser downloads them with your normal SharePoint sign in, then you drop the downloaded files here. You can also drop files straight from your OneDrive synced folder.</p>
+    <div class="cols">
+      <div>
+        <textarea id="links" placeholder="One per line, for example:&#10;https://yourcompany.sharepoint.com/:b:/s/Project/AbC123...&#10;https://yourcompany.sharepoint.com/sites/Project/Shared Documents/.../2000-F00-LST-EL-20002_0.pdf&#10;2000-F00-LST-EL-20002" spellcheck="false"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button id="checkLinks" type="button">Check links</button>
+          <button id="testLink" type="button" disabled>Test the first one</button>
+          <button id="dlLinks" type="button" class="primary" disabled>Download all to my Downloads folder</button>
+        </div>
+        <ul class="ul hide" id="linkList"></ul>
+        <div class="msg" id="linkMsg" role="status"></div>
+        <details style="margin-top:10px">
+          <summary>Why no Microsoft sign in on this page?</summary>
+          <p class="note">Reading SharePoint directly from a web page needs an app registration in your company's Microsoft 365 (Azure), and IT has to approve it. Without that approval, a page like this one is not allowed to fetch files from SharePoint itself. So the page asks your browser to download each link, the same as clicking it, using the sign in you already have. Nothing is sent to anyone else and no password is asked for or stored. If SharePoint shows a sign in page instead of downloading, sign in to SharePoint in this browser, then press the button again.</p>
+        </details>
+      </div>
+      <div>
+        <div class="drop" id="drop">
+          <strong>Drop PDFs, folders or zip files here</strong>
+          Many at once is fine (200 or more, 1 GB or more).
+          <div class="row" style="justify-content:center;margin-top:12px">
+            <label class="btn" for="fileInput">Choose files</label>
+            <label class="btn" for="dirInput">Choose a folder</label>
+          </div>
+          <input id="fileInput" type="file" multiple accept=".pdf,.zip,application/pdf,application/zip" class="hide">
+          <input id="dirInput" type="file" webkitdirectory multiple class="hide">
+        </div>
+        <div class="msg" id="dropMsg" role="status"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <h2 style="margin:0">2. Check the list</h2>
+      <span class="sp"></span>
+      <span class="note" id="countNote"></span>
+      <button id="clearAll" type="button" class="danger">Remove all</button>
+    </div>
+    <p class="sub" style="margin-top:4px">Number and revision come from the register or the file name (NUMBER_REV.pdf). Fix any that are wrong by typing in the box. Untick a row to leave it out.</p>
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th><input type="checkbox" id="allBox" checked aria-label="Include all"></th><th>File</th><th>Document number</th><th>Rev</th><th>Title</th>
+          <th class="num">Pages</th><th class="num">Original</th><th class="num">Reading copy</th><th>Status</th>
+        </tr></thead>
+        <tbody id="tbody"><tr><td colspan="9" class="note" style="padding:16px">No files yet.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>3. Make reading copies</h2>
+    <p class="sub">Each page is turned into a picture at the resolution and quality set in Settings, and the words are kept as hidden text so the copy stays searchable. Originals are never changed.</p>
+    <div class="row">
+      <button id="prepBtn" type="button" class="primary" disabled>Make reading copies</button>
+      <span class="note" id="prepNote"></span>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="msg" id="prepMsg" role="status"></div>
+  </section>
+
+  <section class="card">
+    <h2>4. Get the results</h2>
+    <p class="sub">Batches are made first: reading copies combined into batch-1.pdf, batch-2.pdf and so on, each under the size limit, each starting with a contents page.</p>
+    <div class="row">
+      <button id="zipBtn" type="button" class="primary" disabled>Download everything as one zip</button>
+      <button id="ghBtn" type="button" class="primary" disabled>Upload to GitHub</button>
+      <span class="note" id="outNote"></span>
+    </div>
+    <ul class="ul hide" id="upList"></ul>
+    <div class="msg" id="outMsg" role="status"></div>
+  </section>
+</main>
+
+<div id="jobbar" role="region" aria-label="Progress">
+  <div class="in">
+    <div class="grow">
+      <div class="barlabel" id="jobLabel">Working...</div>
+      <div class="bar"><i id="jobBar"></i></div>
+      <div class="barlabel" id="subLabel" style="margin-top:4px"></div>
+      <div class="bar"><i id="subBar"></i></div>
+    </div>
+    <button id="cancelBtn" type="button" class="danger">Cancel</button>
+  </div>
+</div>
+
+<dialog id="settings">
+  <h3>Settings</h3>
+  <div class="field">
+    <label for="sQuality">Reading copy picture quality (0.1 to 0.95)</label>
+    <input id="sQuality" type="number" min="0.1" max="0.95" step="0.05">
+    <p class="note">0.5 is a good balance. Lower makes smaller files with blurrier small text.</p>
+  </div>
+  <div class="field">
+    <label for="sDpi">Reading copy resolution (dots per inch)</label>
+    <input id="sDpi" type="number" min="50" max="300" step="5">
+    <p class="note">110 keeps P&amp;ID text readable. Very large sheets are drawn a little lower if needed to fit in memory.</p>
+  </div>
+  <div class="field">
+    <label for="sLimit">Batch size limit (MB)</label>
+    <input id="sLimit" type="number" min="2" max="500" step="1">
+  </div>
+  <div class="field">
+    <label><input id="sText" type="checkbox"> Keep the text layer (hidden, searchable text)</label>
+  </div>
+  <hr style="border:0;border-top:1px solid var(--line)">
+  <div class="field">
+    <label for="sToken">GitHub token for bijankle/ProjectLibrary</label>
+    <input id="sToken" type="password" autocomplete="off" placeholder="github_pat_...">
+    <p class="note">Use a fine grained token with access to bijankle/ProjectLibrary only and the permission Contents: Read and write. It is kept in this browser on this device only and is sent only to GitHub.
+      <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Make a token</a></p>
+    <div class="row"><button id="sForget" type="button" class="danger">Forget token</button><span class="note" id="sTokenNote"></span></div>
+  </div>
+  <div class="field">
+    <label for="sBranch">Branch</label>
+    <input id="sBranch" type="text" placeholder="main">
+    <p class="note">Your ingest Action only runs on main.</p>
+  </div>
+  <div class="row" style="margin-top:14px"><span class="sp"></span><button id="sClose" type="button" class="primary">Save and close</button></div>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
